@@ -8,17 +8,21 @@
 #include <random>
 #include <chrono>
 #include <thread>
+#include <unordered_map>
 
 using namespace std;
 
-class chip8 {
+class chip8 
+{
 public:
 	chip8();
 	~chip8();
 	
-	bool drawFlag;
+	bool drawFlag, keypress;
 	void EmulateCycle();
 	bool load (const char * filename);
+	
+	
 
 	// Chip8
 	uint8_t  gfx[2048];
@@ -395,11 +399,11 @@ void chip8::EmulateCycle()
 	if (sound_timer > 0)
 	{
 		if (sound_timer == 1)
-			std::cout << "BEEP" << std::endl;
+			std::cout << "\a" << std::endl;
 		--sound_timer;
 	}
 }
-	
+
 bool chip8::load(const char * filename)
 {
 	Init();
@@ -472,41 +476,80 @@ int main(int argc, char** argv)
 		SDL_RenderSetLogicalSize(ren, WIDTH, HEIGHT);
 		SDL_Texture* tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, WIDTH, HEIGHT);
 
+		unordered_map<int, int> keymap
+		{
+			{ SDLK_1, 0X1 },{ SDLK_2, 0X2 },{ SDLK_3, 0X3 },{ SDLK_4, 0XC },
+			{ SDLK_q, 0X4 },{ SDLK_w, 0X5 },{ SDLK_e, 0X6 },{ SDLK_r, 0XD },
+			{ SDLK_a, 0X7 },{ SDLK_s, 0X8 },{ SDLK_d, 0X9 },{ SDLK_f, 0XE },
+			{ SDLK_z, 0XA },{ SDLK_x, 0X0 },{ SDLK_c, 0XB },{ SDLK_v, 0XF },
+			{ SDLK_5, 0X5 },{ SDLK_6, 0X6 },{ SDLK_7, 0X7 },
+			{ SDLK_8, 0X8 },{ SDLK_9, 0X9 },{ SDLK_0, 0X0 },{ SDLK_ESCAPE, -1 }
+		};
+
 		// game loop
 		uint32_t pixels[2048];
 		bool running = false;
 
+		unsigned inst_per_frame = 50000;
+		unsigned max_inst_per_frame = 0;
+		int frames_done = 0;
+		auto start = chrono::system_clock::now();
+
 		while (!running)
 		{
-			cpu.EmulateCycle();
-
-			SDL_Event e;
-
-			while (SDL_PollEvent(&e) != 0)
+			for (unsigned a = 0; a < max_inst_per_frame && !(cpu.keypress & 0x80); ++a)
+				cpu.EmulateCycle();
+			
+			for (SDL_Event e; SDL_PollEvent(&e);)
 			{
-				if (e.type == SDL_QUIT)
-					running = true;
-
-				if (cpu.drawFlag)
+				switch (e.type)
 				{
-					cpu.drawFlag = false;
-					for (int i = 0; i < 2048; ++i)
-					{
-						uint8_t pixel = cpu.gfx[i];
-						pixels[i] = (0x00FFFFFF * pixel) | 0xFF000000;
-					}
+					case SDL_QUIT: running = true; break;
+					case SDL_KEYDOWN:
+					case SDL_KEYUP:
+						auto i = keymap.find(e.key.keysym.sym);
+						if (i == keymap.end()) break;
+						if (i -> second == -1) { running = true; break; }
+						cpu.key[i -> second] = e.type == SDL_KEYDOWN;
+						if (e.type == SDL_KEYDOWN && (cpu.keypress & 0x80))
+						{
+							cpu.keypress &= 0x7F;
+							cpu.v[cpu.keypress] = i->second;
+						}
 				}
+			}
 
+			auto cur = chrono::system_clock::now();
+			chrono::duration<double> elapsed_seconds = cur - start;
+			int frames = int(elapsed_seconds.count() * 60) - frames_done;
+
+			if (frames > 0)
+			{
+				for (int i = 0; i < 2048; ++i)
+				{
+					uint8_t pixel = cpu.gfx[i];
+					pixels[i] = (0x00FFFFFF * pixel) | 0x0FF000000;
+				}
+				
+				frames_done += frames;
+				int st = min(frames, cpu.sound_timer + 0); cpu.sound_timer -= st;
+				int dt = min(frames, cpu.delay_timer + 0); cpu.delay_timer -= dt;
+				
 				SDL_UpdateTexture(tex, NULL, pixels, 64 * sizeof(Uint32));
 				SDL_RenderClear(ren);
 				SDL_RenderCopy(ren, tex, nullptr, nullptr);
 				SDL_RenderPresent(ren);
 			}
-			SDL_Delay(9);
-			//std::this_thread::sleep_for(std::chrono::microseconds(1000/60));
-
+			
+			max_inst_per_frame = max(frames, 1) * inst_per_frame;
+			if (cpu.keypress & 0x80 || !frames)
+				SDL_Delay(1000/60);
 		}
+			
+			//std::this_thread::sleep_for(max_inst_per_frame);
+
 	}
+		
 	SDL_Quit();
 	return EXIT_SUCCESS;
 }
